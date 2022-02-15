@@ -4,6 +4,7 @@ use wordle::{Wordle, WordleSettings};
 
 use crate::error::WordleError;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "windows")]
     let _ = ansi_term::enable_ansi_support().unwrap();
 
     let mut game = Wordle::new(WordleSettings::default());
