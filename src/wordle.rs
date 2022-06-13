@@ -24,15 +24,13 @@ pub struct WordleSettings {
     pub word_length: usize,
     pub max_guesses: usize,
     pub word_list: WordList,
-    pub set_word: Option<String>,
 }
 impl WordleSettings {
     pub fn default() -> Self {
         WordleSettings {
             word_length: 5,
-            max_guesses: 6,
+            max_guesses: 5,
             word_list: WordList::BuiltIn,
-            set_word: None,
         }
     }
 }
@@ -43,7 +41,6 @@ pub struct Wordle {
     word_list: Vec<String>,
     settings: WordleSettings,
     solved: bool,
-    failed: bool,
 }
 
 impl Display for Wordle {
@@ -72,13 +69,8 @@ impl Wordle {
             WordList::Custom(list) => list,
         };
 
-        let word = match settings.set_word.clone() {
-            Some(word) => word,
-            None => {
-                let mut rng = rand::thread_rng();
-                word_list.choose(&mut rng).unwrap().to_string()
-            }
-        };
+        let mut rng = rand::thread_rng();
+        let word = word_list.choose(&mut rng).unwrap().to_string();
 
         let guesses = vec![];
 
@@ -88,7 +80,6 @@ impl Wordle {
             settings,
             word_list,
             solved: false,
-            failed: false,
         }
     }
     pub fn guess_word(&mut self, guess: String) {
@@ -104,42 +95,59 @@ impl Wordle {
             return;
         }
 
-        if self.guesses.len() >= self.settings.max_guesses - 1 {
-            self.failed = true;
-            return;
-        }
-
         if !self.valid_word(&guess) {
             eprintln!("{}", WordleError::NotAWord { word: &guess });
             return;
         }
 
-        let mut guesses = Vec::new();
-        let mut word: Vec<char> = self.word.chars().collect();
+        let mut try_word: Vec<Option<char>> = self.word.chars().map(Some).collect();
+        let mut try_guess: Vec<Option<char>> = guess.chars().map(Some).collect();
 
-        for (letter, true_letter) in guess.chars().zip(word.clone().iter()) {
-            let occurrence = if &letter == true_letter {
-                Occurrence::Correct
-            } else if word.contains(&letter) {
-                Occurrence::Present
-            } else {
-                Occurrence::Wrong
-            };
+        let mut completed_guess: Vec<Guess> = Vec::with_capacity(self.settings.word_length);
 
-            // broken! check double_letters test case
-            for w in word.iter_mut() {
-                if *w == letter {
-                    *w = ' ';
-                    break;
-                }
+        // Initially, we mark every character as wrong...
+        (0..self.settings.word_length).for_each(|i| {
+            completed_guess.push(Guess {
+                letter: try_guess[i].unwrap(),
+                occurrence: Occurrence::Wrong,
+            });
+        });
+
+        // ...then we mark letters as correct...
+        for i in 0..self.settings.word_length {
+            if try_guess[i] == try_word[i] {
+                completed_guess[i] = Guess {
+                    letter: try_word[i].unwrap(),
+                    occurrence: Occurrence::Correct,
+                };
+                // remove letter from possibilities
+                try_guess[i] = None;
+                try_word[i] = None;
             }
+        }
+        // ...and finally we check if any leftover letters are present,
+        // but in the wrong space.
+        for i in 0..self.settings.word_length {
+            if let Some(g) = try_guess[i] {
+                if try_word.contains(&Some(g)) {
+                    completed_guess[i] = Guess {
+                        letter: g,
+                        occurrence: Occurrence::Present,
+                    };
 
-            guesses.push(Guess { letter, occurrence })
+                    // Get the actual position of the character to remove it
+                    let position = try_word.iter().position(|&f| f == Some(g));
+
+                    try_word[position.unwrap()] = None;
+                    try_guess[i] = None;
+                };
+            }
         }
 
+        // Are ya winning, son?
         self.check_win(&guess);
 
-        self.guesses.push(guesses);
+        self.guesses.push(completed_guess);
     }
 
     pub(super) fn get_cell(&self, x: usize, y: usize) -> Option<&Guess> {
@@ -202,64 +210,51 @@ impl Wordle {
         self.solved
     }
 
-    pub fn failed(&self) -> bool {
-        self.failed
+    pub fn is_failed(&self) -> bool {
+        self.guesses.len() == self.max_guesses()
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
-    fn words() -> Vec<String> {
-        vec![
-            "rises".to_string(),
-            "sises".to_string(),
-            "crabs".to_string(),
-            "clone".to_string(),
-        ]
-    }
-    fn new_game(words: &[String]) -> Wordle {
-        Wordle::new(WordleSettings {
-            max_guesses: 5,
-            word_list: WordList::Custom(words.to_owned()),
-            word_length: 5,
-            set_word: Some(words.first().unwrap().to_string()),
-        })
-    }
-
     #[test]
-    fn simple_game() {
-        let words = words();
-        let mut game = new_game(&words);
-
-        for word in words {
-            game.guess_word(word);
+    fn big_test_file() {
+        #[derive(serde::Deserialize, Debug, Clone)]
+        struct TestCase {
+            word: String,
+            guess: String,
+            correct: String,
         }
-        // game should be solved since we have guessed every single word in the wordlist
-        assert!(game.is_solved());
-    }
 
-    #[test]
-    fn occurrences() {
-        let words = words();
-        let mut game = new_game(&words);
+        let data = include_str!("../tests.txt");
 
-        game.guess_word("sibel".to_string());
-        assert_eq!(game.get_cell(0, 0).unwrap().occurrence, Occurrence::Present);
-        assert_eq!(game.get_cell(0, 1).unwrap().occurrence, Occurrence::Correct);
-        assert_eq!(game.get_cell(0, 2).unwrap().occurrence, Occurrence::Wrong);
-        assert_eq!(game.get_cell(0, 3).unwrap().occurrence, Occurrence::Correct);
-        assert_eq!(game.get_cell(0, 4).unwrap().occurrence, Occurrence::Wrong);
-    }
+        let mut rdr = csv::Reader::from_reader(data.as_bytes());
 
-    #[test]
-    fn double_letters() {
-        let words = words();
-        let mut game = new_game(&words);
+        for result in rdr.deserialize() {
+            let line: TestCase = result.unwrap();
 
-        game.guess_word("sises".to_string());
-        assert_eq!(game.get_cell(0, 0).unwrap().occurrence, Occurrence::Wrong);
+            // Create a new game with only the line's word
+            let mut game = Wordle::new(WordleSettings {
+                word_length: 5,
+                max_guesses: 1,
+                word_list: WordList::Custom(vec![line.word]),
+            });
+
+            game.guess_word(line.guess);
+
+            for i in 0..game.settings.word_length {
+                let occurrence = match line.correct.chars().nth(i).unwrap() {
+                    'c' => Occurrence::Correct,
+                    'w' => Occurrence::Wrong,
+                    'm' => Occurrence::Present,
+                    e => panic!("uhh what: {}", e),
+                };
+
+                // ensure every cell matches the test case of the file
+                assert_eq!(game.get_cell(0, i).unwrap().occurrence, occurrence);
+            }
+        }
     }
 }

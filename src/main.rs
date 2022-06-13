@@ -1,5 +1,6 @@
 mod error;
 mod wordle;
+
 use wordle::{Wordle, WordleSettings};
 
 use crate::error::WordleError;
@@ -12,7 +13,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{game}");
 
     loop {
+        if game.is_failed() {
+            println!("{}", WordleError::NoGuessesLeft { word: game.word() });
+            break;
+        }
+
         let mut guess = String::new();
+
         std::io::stdin().read_line(&mut guess)?;
         game.guess_word(guess);
 
@@ -25,11 +32,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 game.guess_amount(),
                 game.max_guesses()
             );
-            break;
-        }
-
-        if game.failed() {
-            println!("{}", WordleError::NoGuessesLeft { word: game.word() });
             break;
         }
     }
